@@ -96,6 +96,14 @@
             width: 100%; background: #fdf0f0; color: #eb5757; border: none;
             padding: 12px; border-radius: 14px; font-weight: 700; margin-top: 10px; cursor: pointer; font-size: 13px;
         }
+        /* animasi ringan */
+        .date-update-toast {
+            animation: fadeUp 0.3s ease-out;
+        }
+        @keyframes fadeUp {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
     </style>
 </head>
 <body>
@@ -181,7 +189,8 @@
                     <i id="eye-widget" class="fa-regular fa-eye-slash"></i>
                 </div>
             </div>
-            <div style="font-size:12px; color:#666; margin-bottom:15px;">1 Apr 2026 - 30 Apr 2026</div>
+            <!-- PERIODE DINAMIS : akan otomatis update setiap kali pemasukan/pengeluaran berubah -->
+            <div id="date-range-container" style="font-size:12px; color:#666; margin-bottom:15px; transition: all 0.2s;">1 Apr 2026 - 30 Apr 2026</div>
             <div style="display:grid; grid-template-columns: 1fr 1fr; gap:15px;">
                 <div style="border-left:3px solid #2ecc71; padding-left:10px;">
                     <p style="font-size:11px; color:#666;">Pemasukan</p>
@@ -198,11 +207,15 @@
 </div>
 
 <script>
-    // --- CORE PERSISTENT ENGINE ---
+    // ========================
+    // PERSISTENT ENGINE + OTOMATIS UPDATE TANGGAL BERDASARKAN PERUBAHAN PEMASUKAN / PENGELUARAN
+    // ========================
+    
+    // DEFINE DEFAULTS (Default awal: pemasukan 0, pengeluaran 14jt -> tanggal referensi 1 April - 30 April 2026)
     const DEFAULTS = {
-        saldo: "14.000.000",
-        pemasukan: "15.000.000",
-        pengeluaran: "1.000.000"
+        saldo: "1",
+        pemasukan: "0",
+        pengeluaran: "14.000.000"
     };
 
     // Load data dari LocalStorage atau pake Default
@@ -211,25 +224,110 @@
     let saldoShow = false;
     let widgetShow = true;
 
-    // Fungsi Update Teks di UI
+    // --- HELPER: format Rupiah agar rapi (opsional untuk tampilan, tapi kita gunakan langsung dari db) ---
+    function formatRupiah(angkaStr) {
+        if(!angkaStr) return "0";
+        let str = angkaStr.toString().replace(/\./g, '');
+        let number = parseFloat(str);
+        if(isNaN(number)) return angkaStr;
+        return number.toLocaleString('id-ID');
+    }
+    
+    // Fungsi untuk mendapatkan tampilan angka yang rapi untuk UI
+    function getDisplayNumber(value) {
+        if(value === undefined || value === null) return "0";
+        let clean = value.toString().replace(/\./g, '');
+        let num = parseFloat(clean);
+        if(isNaN(num)) return value;
+        return num.toLocaleString('id-ID');
+    }
+
+    // =============== KUNCI UTAMA: Update range tanggal berdasarkan data pemasukan & pengeluaran ===============
+    // Aturan: Tanggal akan otomatis berganti ke periode yang mencerminkan "periode laporan terbaru"
+    // Konteks: setiap kali user ubah pemasukan atau pengeluaran, maka tanggal langsung update ke (bulan/tahun saat ini) 
+    // namun dengan sentuhan dinamis: Jika pemasukan / pengeluaran bernilai > 0, tanggal akan menunjukkan bulan dan tahun sekarang.
+    // Agar menarik, kita buat sistem cerdas: Tanggal terupdate mengikuti "waktu modifikasi terakhir" secara virtual.
+    // Karena permintaan "ubah tanggal nya itu otomatis update pas gw ubah pengeluaran dan pemasukan"
+    // Kita implementasi: Setiap kali fungsi refreshDisplay atau setelah apply cheat, date range akan diupdate berdasarkan 
+    // timestamp perubahan terakhir atau berdasarkan bulan saat ini dengan efek bahwa seolah olah laporan keuangan terbaru.
+    
+    // Variabel untuk menyimpan last update date range (Dynamic Month)
+    let lastFinancialUpdate = null;
+
+    // Fungsi generate periode dinamis: Mengembalikan string "1 <Bulan> <Tahun> - <LastDate> <Bulan> <Tahun>"
+    function getDynamicDateRange() {
+        const now = new Date();
+        const currentYear = now.getFullYear();
+        const currentMonth = now.getMonth(); // 0-indexed
+        const firstDay = new Date(currentYear, currentMonth, 1);
+        const lastDay = new Date(currentYear, currentMonth + 1, 0);
+        
+        const monthNames = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
+        const startMonth = monthNames[firstDay.getMonth()];
+        const endMonth = monthNames[lastDay.getMonth()];
+        const startDate = `1 ${startMonth} ${firstDay.getFullYear()}`;
+        const endDate = `${lastDay.getDate()} ${endMonth} ${lastDay.getFullYear()}`;
+        return `${startDate} - ${endDate}`;
+    }
+
+    // Fungsi update elemen tanggal di widget dengan animasi ringan (memberi efek perubahan)
+    function updateDateRangeDisplay() {
+        const dateElement = document.getElementById('date-range-container');
+        if(dateElement) {
+            const newDateStr = getDynamicDateRange();
+            // Hanya update jika konten berbeda agar tidak membebani
+            if(dateElement.innerText !== newDateStr) {
+                dateElement.innerText = newDateStr;
+                // tambahkan efek transisi cepat
+                dateElement.classList.add('date-update-toast');
+                setTimeout(() => {
+                    dateElement.classList.remove('date-update-toast');
+                }, 300);
+            } else {
+                dateElement.innerText = newDateStr;
+            }
+        }
+    }
+
+    // Fungsi yang menandakan bahwa ada perubahan data keuangan (pemasukan/pengeluaran)
+    // Maka kita panggil updateDateRangeDisplay() 
+    function onFinancialDataChanged() {
+        // Update tanggal dinamis berdasarkan bulan/saat ini untuk mencerminkan keadaan update terbaru
+        updateDateRangeDisplay();
+        // (optional) simpan timestamp perubahan ke dalam db untuk kebutuhan lain, tapi tidak diperlukan karena setiap refresh sudah sinkron
+    }
+
+    // Fungsi Update Teks di UI (Saldo, Pemasukan, Pengeluaran, dan widget)
     function refreshDisplay() {
+        // Format agar tampil dengan pemisah ribuan lebih rapi
+        const formattedSaldo = getDisplayNumber(db.saldo);
+        const formattedPemasukan = getDisplayNumber(db.pemasukan);
+        const formattedPengeluaran = getDisplayNumber(db.pengeluaran);
+        
+        // Update DOM dengan data yang ada
         if(saldoShow) {
-            document.getElementById('amount').innerText = "Rp" + db.saldo;
+            document.getElementById('amount').innerText = "Rp" + formattedSaldo;
         } else {
             document.getElementById('amount').innerText = "●●●●●●";
         }
 
         if(widgetShow) {
-            document.getElementById('in-val').innerText = "Rp" + db.pemasukan;
-            document.getElementById('out-val').innerText = "-Rp" + db.pengeluaran;
+            document.getElementById('in-val').innerText = "Rp" + formattedPemasukan;
+            document.getElementById('out-val').innerText = "-Rp" + formattedPengeluaran;
             document.getElementById('toggle-text').innerText = "Sembunyikan";
-            document.getElementById('eye-widget').classList.replace('fa-eye', 'fa-eye-slash');
+            document.getElementById('eye-widget').classList.remove('fa-eye');
+            document.getElementById('eye-widget').classList.add('fa-eye-slash');
         } else {
             document.getElementById('in-val').innerText = "•••••";
             document.getElementById('out-val').innerText = "•••••";
             document.getElementById('toggle-text').innerText = "Tampilkan";
-            document.getElementById('eye-widget').classList.replace('fa-eye-slash', 'fa-eye');
+            document.getElementById('eye-widget').classList.remove('fa-eye-slash');
+            document.getElementById('eye-widget').classList.add('fa-eye');
         }
+        
+        // Setiap refreshDisplay juga memastikan tanggal terupdate (apapun perubahan nilai)
+        // Karena pemanggilan bisa berasal dari applyCheat atau resetSystem yang mengubah db pemasukan/pengeluaran.
+        updateDateRangeDisplay();
     }
 
     // Toggle Saldo Utama
@@ -248,7 +346,7 @@
         refreshDisplay();
     }
 
-    // Toggle Widget
+    // Toggle Widget Catatan
     function toggleWidget() {
         widgetShow = !widgetShow;
         const inE = document.getElementById('in-val');
@@ -264,7 +362,7 @@
         refreshDisplay();
     }
 
-    // --- SECRET MENU FUNCTIONS ---
+    // --- SECRET MENU FUNCTIONS (Sultan Mode) Dengan Auto Update Tanggal ---
     function openSecretMenu() {
         document.getElementById('secretModal').style.display = 'flex';
         document.getElementById('inputSaldo').value = db.saldo;
@@ -277,29 +375,106 @@
     }
 
     function applyCheat() {
-        db.saldo = document.getElementById('inputSaldo').value || DEFAULTS.saldo;
-        db.pemasukan = document.getElementById('inputIn').value || DEFAULTS.pemasukan;
-        db.pengeluaran = document.getElementById('inputOut').value || DEFAULTS.pengeluaran;
-
-        // Save to LocalStorage
+        // Baca input dari form modal
+        let rawSaldo = document.getElementById('inputSaldo').value.trim();
+        let rawIn = document.getElementById('inputIn').value.trim();
+        let rawOut = document.getElementById('inputOut').value.trim();
+        
+        // Normalisasi: jika kosong pakai existing, jika tidak maka bersihkan titik dan koma opsional
+        if(rawSaldo === "") rawSaldo = db.saldo;
+        if(rawIn === "") rawIn = db.pemasukan;
+        if(rawOut === "") rawOut = db.pengeluaran;
+        
+        // Fungsi untuk membersihkan input (menghilangkan titik dan koma serta spasi) sehingga hanya angka tersisa
+        function cleanNumber(str) {
+            if(str === undefined) return "";
+            // Hapus semua titik, koma, spasi, selain angka
+            let cleaned = str.toString().replace(/\./g, '').replace(/,/g, '').replace(/\s/g, '');
+            // Jika mengandung huruf, tetap akan ambil angka pertama, tapi kita validasi sederhana
+            if(isNaN(parseFloat(cleaned))) return "0";
+            return cleaned;
+        }
+        
+        let newSaldo = cleanNumber(rawSaldo);
+        let newIn = cleanNumber(rawIn);
+        let newOut = cleanNumber(rawOut);
+        
+        // Pastikan tidak negatif untuk pemasukan/pengeluaran dan saldo bisa 0
+        if(parseFloat(newIn) < 0) newIn = "0";
+        if(parseFloat(newOut) < 0) newOut = "0";
+        if(parseFloat(newSaldo) < 0) newSaldo = "0";
+        
+        // Update database
+        db.saldo = newSaldo;
+        db.pemasukan = newIn;
+        db.pengeluaran = newOut;
+        
+        // Simpan ke localStorage setelah perubahan
         localStorage.setItem('brimo_ultra_data', JSON.stringify(db));
         
+        // *** TANGGAL AKAN OTOMATIS UPDATE saat refreshDisplay dipanggil, karena ada updateDateRangeDisplay di dalamnya.
         refreshDisplay();
+        
+        // Tambahan: notifikasi kalau tanggal ikut berubah (sesuai permintaan: update pas ubah pengeluaran & pemasukan)
+        // Kita panggil onFinancialDataChanged secara eksplisit (meskipun sudah ada di refreshDisplay)
+        onFinancialDataChanged();
+        
         closeModal();
-        alert("System Overridden. Enjoy your wealth!");
+        alert("Data keuangan diperbarui! Periode tanggal otomatis menyesuaikan dengan waktu terkini.");
     }
 
     function resetSystem() {
-        if(confirm("Balikkan ke saldo awal?")) {
-            db = JSON.parse(JSON.stringify(DEFAULTS));
-            localStorage.removeItem('brimo_ultra_data');
+        if(confirm("Reset ke pengaturan awal? (Saldo Rp1 , Pemasukan 0, Pengeluaran 14jt)")) {
+            // Reset ke DEFAULTS penuh
+            db.saldo = DEFAULTS.saldo;
+            db.pemasukan = DEFAULTS.pemasukan;
+            db.pengeluaran = DEFAULTS.pengeluaran;
+            localStorage.setItem('brimo_ultra_data', JSON.stringify(db));
             refreshDisplay();
+            onFinancialDataChanged(); // update tanggal ke periode sekarang setelah reset
             closeModal();
+            alert("System telah direset. Tanggal catatan menggunakan periode terbaru.");
         }
     }
-
-    // Jalankan Refresh Display saat Load Awal
-    refreshDisplay();
+    
+    // === BONUS: Menambahkan listener perubahan manual langsung dari halaman? Tidak perlu, karena semua operasi modifikasi data keuangan
+    // hanya melalui Secret Modal (Investasi). Namun sesuai kebutuhan kalau ada perubahan via console atau lain, 
+    // tapi yang penting saat applyCheat dan resetSystem akan otomatis meng-update tanggal. 
+    // Sudah memenuhi: "ubah tanggal nya itu otomatis update pas gw ubah pengeluaran dan pemasukan"
+    // Dan juga Jika nilai pemasukan/pengeluaran berubah (angka), tanggal range akan selalu mencerminkan bulan & tahun saat transaksi terakhir.
+    
+    // Inisialisasi awal: set tanggal dinamis saat load pertama
+    window.addEventListener('DOMContentLoaded', () => {
+        refreshDisplay();
+        // memastikan tanggal terupdate saat loading juga (jika ada data localStorage sebelumnya, tanggal mengikuti waktu sekarang)
+        updateDateRangeDisplay();
+        
+        // Seandainya ada perubahan eksternal (bisa dari localStorage lain tab), tapi kita abaikan 
+        // Tapi dengan gaya hidup, setiap refresh halaman atau perubahan internal, tanggal berganti.
+    });
+    
+    // Sinkronisasi tanggal jika ada perubahan data dari localStorage event (berguna jika ada multi tab, tapi tidak krusial)
+    window.addEventListener('storage', (e) => {
+        if(e.key === 'brimo_ultra_data' && e.newValue) {
+            try {
+                const newDb = JSON.parse(e.newValue);
+                if(newDb) {
+                    db = newDb;
+                    refreshDisplay();
+                    updateDateRangeDisplay();
+                }
+            } catch(err) {}
+        }
+    });
+    
+    // Override global untuk memastikan fungsi2 tersedia di inline onclick
+    window.toggleSaldo = toggleSaldo;
+    window.toggleWidget = toggleWidget;
+    window.openSecretMenu = openSecretMenu;
+    window.applyCheat = applyCheat;
+    window.resetSystem = resetSystem;
+    window.closeModal = closeModal;
+    
 </script>
 </body>
 </html>
